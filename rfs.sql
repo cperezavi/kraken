@@ -1,0 +1,1 @@
+select PROCESS,STATUS,SEQUENCE#,BLOCK# from v$managed_standby;
