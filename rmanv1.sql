@@ -46,7 +46,7 @@ from gv$session where program like '%rman%' and wait_time = 0 and not action is 
 
 select SID,OPERATION,STATUS,round(MBYTES_PROCESSED/1024,0) as GByte ,START_TIME "Hora Inicio", END_TIME "Hora Fin", OBJECT_TYPE "Tipo Objeto", OUTPUT_DEVICE_TYPE "Device Output"
 from v$rman_status
-where STATUS='RUNNING' and OPERATION IN('RESTORE')
+where STATUS='RUNNING' and OPERATION IN('RESTORE','BACKUP')
 order by START_TIME asc;
 
 set linesize 1000
