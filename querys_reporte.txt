@@ -1,0 +1,356 @@
+--Espacio ASM 
+
+SELECT name "Nombre Diskgroup", 
+type as Redundancia, 
+state  AS Estado, 
+round(total_mb/1024,0)"Espacio Total en GB", 
+round((total_mb-free_mb)/1024,0) "Espacio Usado en GB", 
+round(free_mb/1024,0) "Espacio Libre en GB", 
+round(100-((free_mb/total_mb)*100),0) as "% Usado",
+round(100*FREE_MB/TOTAL_MB,0) as "% Libre"
+FROM V$ASM_DISKGROUP;
+
+-- Size Total de BD.
+
+select round(sum(bytes)/1024/1024/1024,0) GB from
+( select sum (bytes) bytes from v$datafile
+  union
+  select sum (bytes) from v$tempfile
+  union
+  select sum (bytes * members) from v$log
+  union
+  select sum(BLOCK_SIZE*FILE_SIZE_BLKS)/1024/1024/1024 controlfile_size from v$controlfile
+)
+/
+
+--size datafiles
+select round(sum(bytes)/1024/1024/1024,0) from v$datafile;
+
+--Size tempfiles
+select round(sum(bytes)/1024/1024/1024,0) from v$tempfile;
+
+--Size redolog
+select round(sum (bytes * members)/1024/1024/1024,0) from v$log;
+
+--Size controfile
+select round(sum(BLOCK_SIZE*FILE_SIZE_BLKS)/1024/1024,0) controlfile_size from v$controlfile;
+
+
+--Tablespace Permanentes
+
+set linesize 1000
+set pages 250
+col  tname  format         a35 justify c heading 'Tablespaces'
+col totsiz  format         999,999,999,990 justify c heading 'Total|(MB)'
+col avasiz  format         999,999,999,990 justify c heading 'Disponible|(MB)'
+col pctusd  format         990 justify c heading 'Pct|Used'
+comp sum of TOTAL_SPACE(Mb) Free_space(Mb) Used_space(Mb) on report
+break on report
+SELECT unique Total.tablespace_name,
+total_space,
+round(nvl(Free_space, 0)) Free_space,
+round(nvl(total_space-Free_space, 0)) Used_space,
+(100-round(NVL(Free_space/total_space,0)*100,2)) PCT_ocupado,
+round(NVL(Free_space/total_space,0)*100,2) PCT_Libre
+FROM
+(select unique tablespace_name, sum(bytes/1024/1024) Free_Space
+from sys.dba_free_space
+group by tablespace_name)Free,
+(select unique b.tablespace_name, sum(bytes/1024/1024) TOTAL_SPACE
+from dba_data_files b
+group by b.tablespace_name) Total
+WHERE Free.Tablespace_name(+) = Total.tablespace_name 
+ORDER BY 5 desc;
+
+
+--Tablespace Temporal
+
+set linesize 1000
+SELECT   A.tablespace_name "Tablespace", 
+		D.mb_total "Total en MBytes" ,
+        SUM (A.used_blocks * D.block_size)/1024/1024 "MBytes Usados",
+        D.mb_total - SUM (A.used_blocks * D.block_size)/1024/1024 "Mbytes Libres",
+        ROUND(NVL((((SUM (A.used_blocks * D.block_size)/ 1024/1024) *100)/D.mb_total),0)) "% Utilizacion"
+FROM     v$sort_segment A,
+        (
+        SELECT   B.name, C.block_size, SUM (C.bytes)/1024/1024 mb_total
+        FROM     v$tablespace B, v$tempfile C
+        WHERE    B.ts#= C.ts#
+        GROUP BY B.name, C.block_size
+        ) D
+WHERE    A.tablespace_name = D.name
+GROUP by A.tablespace_name, D.mb_total;
+
+
+--Datafiles
+
+select TABLESPACE_NAME, file_name, BYTES/1024/1024, AUTOEXTENSIBLE from dba_data_files
+group by TABLESPACE_NAME, file_name, BYTES/1024/1024, AUTOEXTENSIBLE;
+
+
+--Tempfiles
+
+select file_id,file_name, sum(bytes)/1024/1024 MB,autoextensible 
+from dba_temp_files 
+group by file_id,file_name,autoextensible;
+
+
+--Redologfiles.
+
+SELECT
+f.member as member
+  , f.type as redo_file_type
+  , l.status as STATUS
+  , l.bytes/1024/1024 as bytes
+FROM
+    gv$logfile  f
+  , gv$log      l
+  , gv$instance i
+WHERE 
+	f.group#  = l.group#
+	AND l.thread# = i.thread#
+	AND i.inst_id = f.inst_id
+	AND f.inst_id = l.inst_id 
+ORDER BY i.instance_name , f.group# , f.member;
+
+-- Controlfiles.
+SELECT c.name,status,   round((block_size *  file_size_blks)/1024/1024,0)  as file_size
+FROM v$controlfile c
+ORDER BY c.name;
+
+--Limites de process y sessions.
+SELECT rl.resource_name,rl.current_utilization,rl.max_utilization, rl.limit_value
+FROM gv$resource_limit rl, gv$instance gi
+WHERE rl.resource_name IN('processes','sessions','max_shared_servers','parallel_max_servers')
+AND rl.inst_id=gi.inst_id 
+ORDER BY rl.inst_id ASC;
+
+--Sesiones concurrentes.
+SELECT
+sess.username
+  , count(*)              num_user_sess
+  , NVL(act.count, 0)     count_a
+  , NVL(inact.count, 0)   count_i
+  , NVL(killed.count, 0)  count_k
+FROM 
+    gv$session                        sess
+  , gv$instance                       i
+  , (SELECT    count(*) count, NVL(username, '[B.G. Process]') username, inst_id
+     FROM      gv$session
+     WHERE     status = 'ACTIVE'
+     GROUP BY  username, inst_id)              act
+  , (SELECT    count(*) count, NVL(username, '[B.G. Process]') username, inst_id
+     FROM      gv$session
+     WHERE     status = 'INACTIVE'
+     GROUP BY  username, inst_id)              inact
+  , (SELECT    count(*) count, NVL(username, '[B.G. Process]') username, inst_id
+     FROM      gv$session
+     WHERE     status = 'KILLED'
+     GROUP BY  username, inst_id)              killed
+WHERE
+         sess.inst_id                         = i.inst_id
+     AND (
+           NVL(sess.username, '[B.G. Process]') = act.username (+)
+           AND
+           sess.inst_id  = act.inst_id (+)
+         )
+     AND (
+           NVL(sess.username, '[B.G. Process]') = inact.username (+)
+           AND
+           sess.inst_id  = inact.inst_id (+)
+         )
+     AND (
+           NVL(sess.username, '[B.G. Process]') = killed.username (+)
+           AND
+           sess.inst_id  = killed.inst_id (+)
+         )
+     AND sess.username NOT IN ('SYS','SYSMAN','SYSTEM','PATROL','DBSNMP','SERVERVANTAGE_DB','SERVERVANTAGEDB','RESPALDOS','RESPALDO','SERVERVANTAGE')
+GROUP BY
+    i.instance_name
+  , i.thread#
+  , sess.username
+  , act.count
+  , inact.count
+  , killed.count
+ORDER BY
+    i.instance_name
+  , i.thread#
+  , sess.username;
+
+
+--Proyeccion de Espacio.
+  
+set line 150
+col "%Used" format a10
+col "%Proy_1s" format a10
+col "%Proy_1m" format a10
+col tsname format a20
+select tsname,
+round(tablespace_size*t2.block_size/
+1024/1024,2) TSize,
+round(tablespace_usedsize*t2.block_size/1024/1024,0) TUsed,
+round((tablespace_size-tablespace_usedsize)*t2.block_size/1024/1024,0) TFree,
+round(val3*t2.block_size/1024/1024,0) "Dif_1s",
+round(val4*t2.block_size/1024/1024,0) "Dif_1m",
+round((tablespace_usedsize/tablespace_size)*100)||'%' "%Used",
+round(((tablespace_usedsize+val3)/tablespace_size)*100)||'%' "%Proy_1s",
+round(((tablespace_usedsize+val4)/tablespace_size)*100)||'%' "%Proy_1m"
+from
+(select distinct tsname,
+rtime,
+tablespace_size,
+tablespace_usedsize,
+tablespace_usedsize-first_value(tablespace_usedsize) 
+over (partition by tablespace_id order by rtime rows 1 preceding) val1,
+tablespace_usedsize-first_value(tablespace_usedsize) 
+over (partition by tablespace_id order by rtime rows 24 preceding) val2,
+tablespace_usedsize-first_value(tablespace_usedsize) 
+over (partition by tablespace_id order by rtime rows 168 preceding) val3,
+tablespace_usedsize-first_value(tablespace_usedsize) 
+over (partition by tablespace_id order by rtime rows 720 preceding) val4
+from (select t1.tablespace_size, t1.snap_id, t1.rtime,t1.tablespace_id, 
+             t1.tablespace_usedsize-nvl(t3.space,0) tablespace_usedsize
+     from dba_hist_tbspc_space_usage t1,
+          dba_hist_tablespace_stat t2,
+          (select ts_name,sum(space) space 
+           from recyclebin group by ts_name) t3
+     where t1.tablespace_id = t2.ts#
+      and  t1.snap_id = t2.snap_id
+      and  t2.tsname = t3.ts_name (+)) t1,
+dba_hist_tablespace_stat t2
+where t1.tablespace_id = t2.ts#
+and t1.snap_id = t2.snap_id) t1,
+dba_tablespaces t2
+where t1.tsname = t2.tablespace_name
+and rtime = (select max(rtime) from dba_hist_tbspc_space_usage)
+order by "Dif_1s" desc, "Dif_1m" desc;
+
+
+--Hit Ratios
+
+set linesize 1000
+column namespace        heading "Library Object"
+column gets             format 9999,999,999 heading "Gets"
+column gethitratio      format 999.99   heading "Get Hit%"
+column pins             format 9,999,999,999 heading "Pins"
+column pinhitratio      format 999.99   heading "Pin Hit%"
+column db format a10
+select to_char(sysdate, 'DD-MON-YY HH24:MI:SS') "Fecha" from dual;
+select namespace,gets,gethitratio*100 gethitratio,pins,pinhitratio*100 pinhitratio
+from
+v$librarycache 
+where namespace in ('SQL AREA','TABLE/PROCEDURE','BODY','TRIGGER','INDEX');
+
+--Switcheos de los ultimos 30 dias.
+
+CLEAR COLUMNS BREAKS COMPUTES
+
+COLUMN DAY   FORMAT a75              HEADING 'Day/Time'  	ENTMAP off
+COLUMN H00   FORMAT 999,999B         HEADING '00'          	ENTMAP off
+COLUMN H01   FORMAT 999,999B         HEADING '01'          	ENTMAP off
+COLUMN H02   FORMAT 999,999B         HEADING '02'          	ENTMAP off
+COLUMN H03   FORMAT 999,999B         HEADING '03'          	ENTMAP off
+COLUMN H04   FORMAT 999,999B         HEADING '04'          	ENTMAP off
+COLUMN H05   FORMAT 999,999B         HEADING '05'          	ENTMAP off
+COLUMN H06   FORMAT 999,999B         HEADING '06'          	ENTMAP off
+COLUMN H07   FORMAT 999,999B         HEADING '07'          	ENTMAP off
+COLUMN H08   FORMAT 999,999B         HEADING '08'          	ENTMAP off
+COLUMN H09   FORMAT 999,999B         HEADING '09'          	ENTMAP off
+COLUMN H10   FORMAT 999,999B         HEADING '10'          	ENTMAP off
+COLUMN H11   FORMAT 999,999B         HEADING '11'          	ENTMAP off
+COLUMN H12   FORMAT 999,999B         HEADING '12'          	ENTMAP off
+COLUMN H13   FORMAT 999,999B         HEADING '13'          	ENTMAP off
+COLUMN H14   FORMAT 999,999B         HEADING '14'          	ENTMAP off
+COLUMN H15   FORMAT 999,999B         HEADING '15'          	ENTMAP off
+COLUMN H16   FORMAT 999,999B         HEADING '16'          	ENTMAP off
+COLUMN H17   FORMAT 999,999B         HEADING '17'          	ENTMAP off
+COLUMN H18   FORMAT 999,999B         HEADING '18'          	ENTMAP off
+COLUMN H19   FORMAT 999,999B         HEADING '19'          	ENTMAP off
+COLUMN H20   FORMAT 999,999B         HEADING '20'          	ENTMAP off
+COLUMN H21   FORMAT 999,999B         HEADING '21'          	ENTMAP off
+COLUMN H22   FORMAT 999,999B         HEADING '22'          	ENTMAP off
+COLUMN H23   FORMAT 999,999B         HEADING '23'          	ENTMAP off
+COLUMN TOTAL FORMAT 999,999,999      HEADING 'Total'       	ENTMAP off
+
+BREAK ON report
+COMPUTE sum LABEL avg label Promedio: OF total ON report
+
+SELECT
+    SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH:MI:SS'),1,5)  DAY
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'00',1,0)) 00
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'01',1,0)) 01
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'02',1,0)) 02
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'03',1,0)) 03
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'04',1,0)) 04
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'05',1,0)) 05
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'06',1,0)) 06
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'07',1,0)) 07
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'08',1,0)) 08
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'09',1,0)) 09
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'10',1,0)) 10
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'11',1,0)) 11
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'12',1,0)) 12
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'13',1,0)) 13
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'14',1,0)) 14
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'15',1,0)) 15
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'16',1,0)) 16
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'17',1,0)) 17
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'18',1,0)) 18
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'19',1,0)) 19
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'20',1,0)) 20
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'21',1,0)) 21
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'22',1,0)) 22
+  , SUM(DECODE(SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH24:MI:SS'),10,2),'23',1,0)) 23
+  , COUNT(*) TOTAL
+FROM v$log_history  a
+WHERE sysdate-30 < first_time 
+GROUP BY SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH:MI:SS'),1,5)
+ORDER BY SUBSTR(TO_CHAR(first_time, 'MM/DD/RR HH:MI:SS'),1,5)
+/
+
+--Espacio de FRA
+
+COLUMN name               FORMAT a75                  HEADING 'Nombre'               		ENTMAP off
+COLUMN space_limit        FORMAT 99,999,999,999,999   HEADING 'Limite de Espacio'        	ENTMAP off
+COLUMN space_used         FORMAT 99,999,999,999,999   HEADING 'Espacio Usado'         		ENTMAP off
+COLUMN space_used_pct     FORMAT 999.99               HEADING '%Usado'             			ENTMAP off
+COLUMN space_reclaimable  FORMAT 99,999,999,999,999   HEADING 'Espacio Reclamable'  		ENTMAP off
+COLUMN pct_reclaimable    FORMAT 999.99               HEADING '%Reclamable'      			ENTMAP off
+COLUMN number_of_files    FORMAT 999,999              HEADING 'No. de Archivos'    			ENTMAP off
+
+SELECT
+    name
+  , space_limit/1024/1024 as space_limit
+  , round(space_used/1024/1024,0) as space_used
+  , ROUND((space_used / DECODE(space_limit, 0, 0.000001, space_limit))*100,0) as space_used_pct
+  , space_reclaimable as space_reclaimable
+  , ROUND((space_reclaimable / DECODE(space_limit, 0, 0.000001, space_limit))*100, 0) as pct_reclaimable
+  , number_of_files as number_of_files
+FROM
+	v$recovery_file_dest
+ORDER BY name;
+
+
+-- Top 10 Segments.
+SELECT
+    a.owner as Usuario
+  , a.segment_name
+  , a.partition_name
+  , a.segment_type
+  , a.tablespace_name
+  , round(a.bytes/1024/1024,0)
+  FROM
+    (select
+         b.owner
+       , b.segment_name
+       , b.partition_name
+       , b.segment_type
+       , b.tablespace_name
+       , b.bytes
+     from
+         dba_segments b
+     order by
+         b.bytes desc
+    ) a
+WHERE
+    rownum < 11;
