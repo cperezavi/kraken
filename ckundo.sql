@@ -1,7 +1,7 @@
 set verify off
 set linesize 1000
 set pagesize 1000
-accept sid char prompt 'What is the SID to search for: '
+accept sid char prompt 'What is the SID to search consume UNDO for: '
 select sid, sql_text
 from gv$session s, gv$sql q
 where sid in (&sid)
