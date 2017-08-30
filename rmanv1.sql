@@ -1,68 +1,52 @@
 set feedback on;
 set linesize 1000;
-set pagesize 150;
+set pagesize 650;
 alter session set nls_date_format = 'DD-MM-YYYY hh24:mi:ss';
 select to_char(sysdate, 'DD-MON-YY HH24:MI:SS') "Fecha" from dual;
-col filename format a95
+col filename format a70
 col bytes format a4
 col inst format a3
 col BUFFER_COUNT format a3
-select inst_id "Instancia", sid, 'sync', status, round(BYTES/1024/1024,0) as GB, filename, BUFFER_COUNT as count, BUFFER_SIZE, buffer_size*buffer_count buffer_mem, substr(device_type,1,10) as device_type 
+select inst_id "Instancia", sid, 'sync', status, round(BYTES/1024/1024/1024,0) GB, filename, BUFFER_COUNT "#Buffers", BUFFER_SIZE "Buffer Size", buffer_size*buffer_count "Total Buffer", substr(device_type,1,10) device_type
 from gv$backup_sync_io
 where status = 'IN PROGRESS'
 union
-select inst_id "Instancia",sid, 'async',status, round(BYTES/1024/1024/1024,0) as GB, filename, BUFFER_COUNT as count, BUFFER_SIZE, buffer_size*buffer_count buffer_mem, substr(device_type,1,10) as device_type 
+select inst_id "Instancia", sid, 'async' ,status, round(BYTES/1024/1024/1024,0) GB, filename, BUFFER_COUNT "#Buffers", BUFFER_SIZE "Buffer Size", buffer_size*buffer_count "Total Buffer", substr(device_type,1,10) device_type
 from gv$backup_async_io
 where status = 'IN PROGRESS'
 order by device_type;
 
-SELECT inst_id "Instancia", event, TOTAL_WAITS, TOTAL_TIMEOUTS, TIME_WAITED, AVERAGE_WAIT, TIME_WAITED_MICRO, sysdate as SNAPSHOT_TIME
-FROM gv$system_event
-WHERE event LIKE 'Backup%';
-
-COLUMN EVENT FORMAT a55
-COLUMN SECONDS_IN_WAIT FORMAT 9999
-COLUMN STATE FORMAT a20
-COLUMN CLIENT_INFO FORMAT a30
-COLUMN SPID format 999999
-SELECT p.inst_id "Instancia", p.SPID, s.EVENT, s.SECONDS_IN_WAIT AS SEC_WAIT, 
-       sw.STATE, s.CLIENT_INFO
-FROM   gV$SESSION_WAIT sw, gV$SESSION s, gV$PROCESS p
-WHERE  sw.EVENT LIKE '%MML%'
-AND    s.SID=sw.SID
-AND    s.PADDR=p.ADDR
-and p.inst_id =  s.inst_id
-and s.event like '%MML%';
-
-column opname format a50;
-select INST_ID as "Instancia", SID,SERIAL#, START_TIME "Hora Inicio",  OPNAME "Operacion" , sysdate + TIME_REMAINING/3600/24 "Hora Fin", ROUND(SOFAR/TOTALWORK*100,2) "%Completado"
+column opname format a40;
+select sysdate "Fecha", inst_id "Instancia", sid, start_time "Hora Inicio Canal", opname "Operacion", sysdate + TIME_REMAINING/3600/24 "Hora Fin Canal", round(SOFAR/TOTALWORK*100,0) "%Completado"
 from gv$session_longops
 where totalwork > sofar
 AND opname NOT LIKE '%aggregate%'
 AND opname like 'RMAN%';
 
-select inst_id "Instancia", sid, CLIENT_INFO "channel", seq#, event, state, wait_time_micro/1000000 "Segundos"
-from gv$session where program like '%rman%' and wait_time = 0 and not action is null;
-
-select SID,OPERATION,STATUS,round(MBYTES_PROCESSED/1024,0) as GByte ,START_TIME "Hora Inicio", END_TIME "Hora Fin", OBJECT_TYPE "Tipo Objeto", OUTPUT_DEVICE_TYPE "Device Output"
+select sysdate "Fecha", start_time "Inicio Respaldo", sid, operation "Operacion", status "Estatus", round(MBYTES_PROCESSED/1024,0) "GB", object_type "Tipo Objeto", output_device_type "Device Output"
 from v$rman_status
-where STATUS='RUNNING' and OPERATION IN('RESTORE','BACKUP')
-order by START_TIME asc;
+where status in ('RUNNING','RUNNING WITH ERRORS') and operation IN('BACKUP')
+order by start_time asc;
+
+select sysdate "Fecha", start_time "Inicio Respaldo", round(INPUT_BYTES/1024/1024/1024,0) "Input GB", round(OUTPUT_BYTES/1024/1024/1024,0) "Output GB", round(INPUT_BYTES/1024/1024/1024,0)
+ - round(OUTPUT_BYTES/1024/1024/1024,0) "Diferencia GB", INPUT_TYPE "Tipo Respaldo", round(ELAPSED_SECONDS/60,0) "Minutos", OUTPUT_DEVICE_TYPE "Device Output"
+from V$RMAN_BACKUP_JOB_DETAILS
+where status in('RUNNING','RUNNING WITH ERRORS') and input_type LIKE 'DB%';
 
 set linesize 1000
 column Pct_Complete format 99.99
-column client_info format a15
+column client_info format a10
 column sid format 9999999
 column MB_X_SEG format 99999.99
 column inst_id format a3
-select s.client_info "Canal",
-l.sofar,
-l.totalwork,
-round (l.sofar / l.totalwork*100,2) "%Completado",
+select sysdate "Fecha",
+s.client_info "Canal",
+l.sofar "Realizado",
+l.totalwork "Total",
+round (l.sofar / l.totalwork*100,0) "%Completado",
 aio.MB_X_SEG,
 aio.LONG_WAIT_PCT
-from gv$session_longops l,
-gv$session s,
+from gv$session_longops l, gv$session s,
 (select sid,
 serial,
 100* sum (long_waits) / sum (io_count) as "LONG_WAIT_PCT",
@@ -78,3 +62,31 @@ and l.sofar <> l.totalwork
 and s.sid = l.sid
 and s.serial# = l.serial#
 order by 1;
+
+col dbsize_Gbytes      for 999,999,990 justify right head "DB Size GB"
+col input_Gbytes       for 999,999,990 justify right head "Read GB"
+col output_Gbytes      for 999,999,990 justify right head "Written GB"
+col output_device_type for a10 justify left head "Device Output"
+col complete           for 990 justify right head "%Completado" 
+col est_complete       for a20 head "Fecha Estimada Fin"
+col recid              for 9999999 head "IDRMAN"
+select sysdate "Fecha"
+, recid
+, output_device_type
+, dbsize_gbytes
+, trunc(round (input_bytes/1024/1024/1024,0)) input_gbytes
+, trunc(round(output_bytes/1024/1024/1024,0)) output_gbytes
+, round (input_bytes/1024/1024/1024,0) - round(output_bytes/1024/1024/1024,0) "Diferiencia"
+, round((mbytes_processed/1024/dbsize_gbytes*100),1) complete
+, start_time "Inicio Respaldo"
+, to_char(start_time + (sysdate-start_time)/(mbytes_processed/1024/dbsize_gbytes),'DD-MM-YYYY HH24:MI:SS') est_complete
+from v$rman_status rs , (select sum(bytes)/1024/1024/1024 dbsize_gbytes from v$datafile) 
+where status IN('RUNNING','RUNNING WITH ERRORS') and output_device_type is not null;
+
+col inst_id for 990 justify right head "Instancia"
+select sysdate "Fecha", inst_id, pool "Pool", round(bytes/1024/1024,0) "Free Memory MB"
+from gv$sgastat
+where name Like '%free memory%' and pool='large pool'
+order by inst_id asc;
+
+exit;

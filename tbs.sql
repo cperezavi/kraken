@@ -2,10 +2,10 @@
 
 set linesize 1000
 set pages 250
-col  tname  format         a35 justify c heading 'Tablespaces'
-col totsiz  format         999,999,999,990 justify c heading 'Total|(MB)'
-col avasiz  format         999,999,999,990 justify c heading 'Disponible|(MB)'
-col pctusd  format         990 justify c heading 'Pct|Used'
+col  tname  format a35 justify c heading 'Tablespaces'
+col totsiz  format 999,999,999,990 justify c heading 'Total|(MB)'
+col avasiz  format 999,999,999,990 justify c heading 'Disponible|(MB)'
+col pctusd  format 990 justify c heading 'Pct|Used'
 comp sum of TOTAL_SPACE(Mb) Free_space(Mb) Used_space(Mb) on report
 break on report
 SELECT unique Total.tablespace_name,
@@ -22,4 +22,4 @@ group by tablespace_name)Free,
 from dba_data_files b
 group by b.tablespace_name) Total
 WHERE Free.Tablespace_name(+) = Total.tablespace_name 
-ORDER BY 6 asc;
+ORDER BY 6 desc;

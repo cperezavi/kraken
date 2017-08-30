@@ -28,6 +28,10 @@ SET PAGESIZE 24
 ##########################################################################################################
 ##########################################################################################################
 ##########################################################################################################
+select SID, SERIAL#, INST_ID, USERNAME, STATUS, PROGRAM, SQL_ID, event
+ from gv$session 
+where username = 'REPORTS'
+and status = 'ACTIVE' ;
 
 SET SERVEROUTPUT ON
 declare
@@ -56,3 +60,30 @@ SET ECHO OFF
 SET FEEDBACK OFF
 
 SELECT DBMS_SQLTUNE.REPORT_TUNING_TASK('&&task_id') AS recommendations FROM dual;
+
+
+##################################################################################################################
+SET LONG 1000000
+SET LONGCHUNKSIZE 1000000
+SET LINESIZE 1000
+SET PAGESIZE 0
+SET TRIM ON
+SET TRIMSPOOL ON
+SET ECHO OFF
+SET FEEDBACK OFF
+
+SPOOL /home/oracle/report_sql_detail_f4xzjsxf75jng.html
+SELECT DBMS_SQLTUNE.report_sql_detail(
+  sql_id       => 'f4xzjsxf75jng',
+  type         => 'ACTIVE',
+  report_level => 'ALL') AS report
+FROM dual;
+SPOOL OFF;
+exit;
+
+##################################################################################################################
+col opname for a20
+col ADVISOR_NAME for a20
+SELECT SID,SERIAL#,USERNAME,OPNAME,ADVISOR_NAME,TARGET_DESC,START_TIME SOFAR, TOTALWORK 
+FROM   V$ADVISOR_PROGRESS 
+WHERE  USERNAME = 'SYS';
